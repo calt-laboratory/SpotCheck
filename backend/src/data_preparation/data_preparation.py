@@ -32,9 +32,35 @@ IMAGENET_STD: Final[list[float]] = [
 DEFAULT_IMAGE_SIZE: Final[tuple[int, int]] = (224, 224)
 
 
-def load_metadata() -> pl.DataFrame:
+def split_datasets(
+    test_size: float = 0.2,
+    validation_size: float = 0.1,
+) -> tuple[Dataset, Dataset, Dataset]:
+    df = _load_metadata()
+    print(f"Number of samples: {df.shape[0]}")
+
+    transform = _get_transforms()
+    dataset = NevusDataset(df, transform)
+
+    test_dataset, temp_dataset = random_split(
+        dataset=dataset, lengths=[test_size, 1 - test_size]
+    )
+
+    validation_dataset, train_dataset = random_split(
+        dataset=temp_dataset,
+        lengths=[
+            validation_size / (1 - test_size),
+            1 - validation_size / (1 - test_size),
+        ],
+    )
+
+    return train_dataset, validation_dataset, test_dataset
+
+
+
+def _load_metadata() -> pl.DataFrame:
     df = pl.read_csv(METADATA_PATH)
-    print(df)
+    print(df.head())
 
     # Keep only rows where diagnosis col is "nv" = Nevus or "mel" = Melanoma
     return df.filter(pl.col("dx").is_in(["nv", "mel"]))
@@ -61,7 +87,7 @@ class NevusDataset(Dataset):
         return img, label
 
 
-def get_transforms() -> transforms.Compose:
+def _get_transforms() -> transforms.Compose:
     return transforms.Compose(
         [
             transforms.Resize(DEFAULT_IMAGE_SIZE),
@@ -69,30 +95,6 @@ def get_transforms() -> transforms.Compose:
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]
     )
-
-
-def split_datasets(
-    test_size: float = 0.2,
-    validation_size: float = 0.1,
-) -> tuple[Dataset, Dataset, Dataset]:
-    df = load_metadata()
-    transform = get_transforms()
-    dataset = NevusDataset(df, transform)
-    dataset.__getitem__(7810)
-
-    test_dataset, temp_dataset = random_split(
-        dataset=dataset, lengths=[test_size, 1 - test_size]
-    )
-
-    validation_dataset, train_dataset = random_split(
-        dataset=temp_dataset,
-        lengths=[
-            validation_size / (1 - test_size),
-            1 - validation_size / (1 - test_size),
-        ],
-    )
-
-    return train_dataset, validation_dataset, test_dataset
 
 
 if __name__ == "__main__":
