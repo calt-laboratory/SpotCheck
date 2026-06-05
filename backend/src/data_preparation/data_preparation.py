@@ -1,12 +1,12 @@
 import polars as pl
 from pathlib import Path
-from typing import Final
+from typing import Final, Any
 from PIL import Image
 from PIL.ImageFile import ImageFile
 
 from torch.utils.data import Dataset, random_split
 from torchvision import transforms
-
+from torchvision.transforms import Compose
 
 DATA_DIR: Final[Path] = Path(__file__).parent.parent.parent / "data" / "ham10000"
 METADATA_PATH: Final[Path] = DATA_DIR / "HAM10000_metadata.csv"
@@ -29,7 +29,7 @@ IMAGENET_STD: Final[list[float]] = [
 
 # Default input size for most pretrained models (ResNet, EfficientNet, etc.)
 # 224x224 is the standard resolution used in ImageNet pretraining, balancing accuracy and computational efficiency.
-DEFAULT_IMG_SIZE: Final[tuple[int, int]] = (224, 224)
+DEFAULT_IMAGE_SIZE: Final[tuple[int, int]] = (224, 224)
 
 
 def load_metadata() -> pl.DataFrame:
@@ -41,7 +41,7 @@ def load_metadata() -> pl.DataFrame:
 
 
 class NevusDataset(Dataset):
-    def __init__(self, df: pl.DataFrame, transform: transforms | None = None):
+    def __init__(self, df: pl.DataFrame, transform: Compose | None = None):
         self._df = df
         self._images_dir = IMAGE_DIR
         self._transform = transform
@@ -49,9 +49,9 @@ class NevusDataset(Dataset):
     def __len__(self) -> int:
         return len(self._df)
 
-    def __getitem__(self, idx: int) -> tuple[ImageFile, int]:
+    def __getitem__(self, idx: int) -> tuple[ImageFile | Any, int]:
         row = self._df[idx]
-        img_path = self._images_dir / f"{row['image_id']}.jpg"
+        img_path = self._images_dir / f"{row['image_id'].item()}.jpg"
         img = Image.open(img_path).convert("RGB")  # removes Alpha channel
         label = LABEL_MAP[row["dx"].item()]
 
@@ -64,7 +64,7 @@ class NevusDataset(Dataset):
 def get_transforms() -> transforms.Compose:
     return transforms.Compose(
         [
-            transforms.Resize(DEFAULT_IMG_SIZE),
+            transforms.Resize(DEFAULT_IMAGE_SIZE),
             transforms.ToTensor(),
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]
@@ -72,11 +72,13 @@ def get_transforms() -> transforms.Compose:
 
 
 def split_datasets(
-    test_size: float = 0.2, validation_size: float = 0.1
+    test_size: float = 0.2,
+    validation_size: float = 0.1,
 ) -> tuple[Dataset, Dataset, Dataset]:
     df = load_metadata()
     transform = get_transforms()
     dataset = NevusDataset(df, transform)
+    dataset.__getitem__(7810)
 
     test_dataset, temp_dataset = random_split(
         dataset=dataset, lengths=[test_size, 1 - test_size]
@@ -94,4 +96,4 @@ def split_datasets(
 
 
 if __name__ == "__main__":
-    load_metadata()
+    split_datasets()
