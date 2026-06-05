@@ -4,8 +4,7 @@ from typing import Final
 from PIL import Image
 from PIL.ImageFile import ImageFile
 
-from functorch.dim import Tensor
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, random_split
 from torchvision import transforms
 
 
@@ -17,8 +16,16 @@ LABEL_MAP: Final[dict[str, int]] = {"nv": 0, "mel": 1}
 # Standard normalization values for ImageNet-pretrained models.
 # These are used because most PyTorch models (ResNet, EfficientNet, etc.) were pretrained on ImageNet, and normalizing
 # w/ these mean/std values ensures compatibility w/ the pretrained weights and stable training.
-IMAGENET_MEAN: Final[list[float]] = [0.485, 0.456, 0.406]  # RGB channel means from ImageNet
-IMAGENET_STD: Final[list[float]] = [0.229, 0.224, 0.225]   # RGB channel std from ImageNet
+IMAGENET_MEAN: Final[list[float]] = [
+    0.485,
+    0.456,
+    0.406,
+]  # RGB channel means from ImageNet
+IMAGENET_STD: Final[list[float]] = [
+    0.229,
+    0.224,
+    0.225,
+]  # RGB channel std from ImageNet
 
 # Default input size for most pretrained models (ResNet, EfficientNet, etc.)
 # 224x224 is the standard resolution used in ImageNet pretraining, balancing accuracy and computational efficiency.
@@ -45,7 +52,7 @@ class NevusDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[ImageFile, int]:
         row = self._df[idx]
         img_path = self._images_dir / f"{row['image_id']}.jpg"
-        img = Image.open(img_path).convert("RGB") # removes Alpha channel
+        img = Image.open(img_path).convert("RGB")  # removes Alpha channel
         label = LABEL_MAP[row["dx"].item()]
 
         if self._transform:
@@ -55,11 +62,35 @@ class NevusDataset(Dataset):
 
 
 def get_transforms() -> transforms.Compose:
-    return transforms.Compose([
-        transforms.Resize(DEFAULT_IMG_SIZE),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-    ])
+    return transforms.Compose(
+        [
+            transforms.Resize(DEFAULT_IMG_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ]
+    )
+
+
+def split_datasets(
+    test_size: float = 0.2, validation_size: float = 0.1
+) -> tuple[Dataset, Dataset, Dataset]:
+    df = load_metadata()
+    transform = get_transforms()
+    dataset = NevusDataset(df, transform)
+
+    test_dataset, temp_dataset = random_split(
+        dataset=dataset, lengths=[test_size, 1 - test_size]
+    )
+
+    validation_dataset, train_dataset = random_split(
+        dataset=temp_dataset,
+        lengths=[
+            validation_size / (1 - test_size),
+            1 - validation_size / (1 - test_size),
+        ],
+    )
+
+    return train_dataset, validation_dataset, test_dataset
 
 
 if __name__ == "__main__":
