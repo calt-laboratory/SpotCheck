@@ -1,48 +1,32 @@
 import time
 import torch
+from dataclasses import dataclass
 from tqdm import tqdm
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 from torch import nn, optim
 from pathlib import Path
-from typing import Final
 
 from src.data_preparation.data_preparation import split_datasets
 
 
-NUM_CPU_WORKERS: Final[int] = 16
+# Set seed for reproducibility
+torch.manual_seed(42)
 
 
-def train_model(
-    epochs: int = 10,
-    batch_size: int = 64,
-    learning_rate: float = 0.001,
-    model_save_path: Path = Path("models/efficient_b0.pth"),
-) -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+@dataclass
+class TrainingConfig:
+    epochs: int = 10
+    batch_size: int = 256
+    learning_rate: float = 0.001
+    patience: int = 3
+    num_workers: int = 16
+    model_save_path: Path = Path("models") / "efficient_b0.pth"
 
-    train_dataset, validation_dataset, _ = split_datasets()
 
-    pin_memory = True if device.type == "cuda" else False
-
-    train_loader = DataLoader(
-        dataset=train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=NUM_CPU_WORKERS,
-        pin_memory=pin_memory,
-    )
-
-    validation_loader = DataLoader(
-        dataset=validation_dataset,
-        batch_size=batch_size,
-        shuffle=False,  # No shuffling for validation
-        num_workers=NUM_CPU_WORKERS,
-        pin_memory=pin_memory,
-    )
-
+def _initialize_model(device: torch.device) -> nn.Module:
+    """Initialize EfficientNet-B0 with pretrained weights and binary classifier."""
     weights = EfficientNet_B0_Weights.IMAGENET1K_V1
     model = efficientnet_b0(weights=weights)
 
@@ -50,125 +34,153 @@ def train_model(
     for param in model.parameters():
         param.requires_grad = False
 
-    num_in_features = model.classifier[1].in_features
-    # Replace final classifier layer w/ new binary classifier (nevus and melanoma)
-    model.classifier[1] = nn.Linear(in_features=num_in_features, out_features=2)
+    num_features = model.classifier[1].in_features
+    model.classifier[1] = nn.Linear(num_features, 2)
 
-    model = model.to(device)
+    return model.to(device)
 
-    criterion = CrossEntropyLoss()
-    optimizer = optim.Adam(params=model.parameters(), lr=learning_rate)
+
+def _train_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: CrossEntropyLoss,
+    optimizer: optim.Optimizer,
+    device: torch.device,
+    non_blocking: bool,
+) -> tuple[float, float]:
+    """Run one training epoch, return (avg_loss, avg_accuracy)."""
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+
+    for images, labels in tqdm(loader, desc="Training", leave=False):
+        images = images.to(device, non_blocking=non_blocking)
+        labels = labels.to(device, non_blocking=non_blocking)
+
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item() * images.size(0)
+        _, predicted = torch.max(outputs.data, dim=1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+    avg_loss = running_loss / total
+    accuracy = 100 * correct / total
+    return avg_loss, accuracy
+
+
+def _validate_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: CrossEntropyLoss,
+    device: torch.device,
+) -> tuple[float, float]:
+    """Run one validation epoch, return (avg_loss, avg_accuracy)."""
+    model.eval()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for images, labels in tqdm(loader, desc="Validation", leave=False):
+            images = images.to(device)
+            labels = labels.to(device)
+
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+
+            running_loss += loss.item() * images.size(0)
+            _, predicted = torch.max(outputs.data, dim=1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    avg_loss = running_loss / total
+    accuracy = 100 * correct / total
+    return avg_loss, accuracy
+
+
+def train_model(config: TrainingConfig) -> None:
+    """Main training function with early stopping and model checkpointing."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     non_blocking = True if device.type == "cuda" else False
 
-    # Initialize tracking variables
-    best_validation_acc = 0.0
-    patience = 3  # Early stopping: wait 3 epochs w/o improvement
-    no_improvement_count = 0
+    # Initialize data loaders
+    train_dataset, validation_dataset, _ = split_datasets()
+    pin_memory = True if device.type == "cuda" else False
 
+    train_loader = DataLoader(
+        dataset=train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=config.num_workers,
+        pin_memory=pin_memory,
+    )
+
+    validation_loader = DataLoader(
+        dataset=validation_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=pin_memory,
+    )
+
+    model = _initialize_model(device)
+    criterion = CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+
+    # Training state tracking
+    best_val_acc = 0.0
+    no_improvement_count = 0
     start_time = time.time()
 
-    for epoch in range(epochs):
-        model.train()  # Activate training mode (enables Dropout, BatchNorm uses batch stats)
-        train_loss = 0.0
-        correct_train_predictions = 0
-        total_num_train_samples = 0
-
-        for images, labels in tqdm(train_loader, desc=f"Epoch {epoch+1} Train", leave=False):
-            # Transfer data to target device (GPU/CPU) asynchronously so CPU can load/transform next batch while GPU
-            # computes gradients on curr batch
-            images = images.to(device, non_blocking=non_blocking)
-            labels = labels.to(device, non_blocking=non_blocking)
-
-            # Reset gradients to zero because Pytorch accumulates gradients by default
-            optimizer.zero_grad()
-
-            # Forward pass: compute model predictions
-            outputs = model(images)
-
-            # Calculate loss btw predictions and labels
-            loss = criterion(outputs, labels)
-
-            # Backward pass: compute gradients of loss w.r.t. all params
-            loss.backward()
-
-            # Update model weights using gradients
-            optimizer.step()
-
-            # Accumulate loss for epoch average weighted by batch size
-            train_loss += loss.item() * images.size(0)
-
-            # Get predicted class indices by selecting the class w/ the highest logit for each sample
-            # dim=1: class dimension (max over all classes for each sample in batch)
-            # Note: Logits are the raw model outputs - Cross Entropy expects logits, not probabilities
-            _, predicted = torch.max(outputs.data, dim=1)
-
-            # Count total samples in curr batch
-            total_num_train_samples += labels.size(0)
-
-            correct_train_predictions += (predicted == labels).sum().item()
-
-        # Compute average training loss per sample for the entire epoch
-        train_loss /= total_num_train_samples
-        train_acc = 100 * correct_train_predictions / total_num_train_samples
-
-        # Switch to evaluation mode
-        model.eval()
-
-        validation_loss = 0.0
-        correct_validation_predictions = 0
-        total_num_validation_samples = 0
-
-        with torch.no_grad():
-            for images, labels in tqdm(validation_loader, desc=f"Epoch {epoch+1} Val", leave=False):
-                images = images.to(device)
-                labels = labels.to(device)
-
-                outputs = model(images)
-                loss = criterion(outputs, labels)
-
-                validation_loss += loss.item() * images.size(0)
-                _, predicted = torch.max(outputs.data, 1)
-                total_num_validation_samples += labels.size(0)
-                correct_validation_predictions += (predicted == labels).sum().item()
-
-        validation_loss /= total_num_validation_samples
-        validation_acc = (
-            100 * correct_validation_predictions / total_num_validation_samples
+    for epoch in range(config.epochs):
+        # Training phase
+        train_loss, train_acc = _train_epoch(
+            model, train_loader, criterion, optimizer, device, non_blocking
         )
 
-        # Check for best validation accuracy and save model
-        if validation_acc > best_validation_acc:
-            best_validation_acc = validation_acc
+        # Validation phase
+        validation_loss, validation_acc = _validate_epoch(
+            model, validation_loader, criterion, device
+        )
+
+        # Check for best model and save
+        if validation_acc > best_val_acc:
+            best_val_acc = validation_acc
             no_improvement_count = 0
-            torch.save(model.state_dict(), model_save_path)
-            print(f"New best model saved! Validation Acc: {best_validation_acc:.2f}%")
+            torch.save(model.state_dict(), config.model_save_path)
+            print(f"New best model saved! Val Acc: {best_val_acc:.2f}%")
         else:
             no_improvement_count += 1
-            print(f"No improvement for {no_improvement_count}/{patience} epochs")
+            print(f"No improvement for {no_improvement_count}/{config.patience} epochs")
 
         print(
-            f"Epoch {epoch + 1}/{epochs} | "
+            f"Epoch {epoch + 1}/{config.epochs} | "
             f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}% | "
             f"Val Loss: {validation_loss:.4f} | Val Acc: {validation_acc:.2f}%"
         )
 
         # Early stopping check
-        if no_improvement_count >= patience:
-            print(f"Early stopping triggered after {epoch + 1} epochs (no improvement for {patience} epochs)")
+        if no_improvement_count >= config.patience:
+            print(
+                f"Early stopping triggered after {epoch + 1} epochs (no improvement for {config.patience} epochs)"
+            )
             break
 
-    # Print training summary
     training_time = time.time() - start_time
     minutes, seconds = divmod(int(training_time), 60)
-    print(f"Training complete. Best Val Acc: {best_validation_acc:.2f}%")
+    print(f"Training complete. Best Val Acc: {best_val_acc:.2f}%")
     print(f"Total training time: {minutes}m {seconds}s")
-    print(f"Model saved to {model_save_path}")
+    print(f"Model saved to {config.model_save_path}")
 
 
 if __name__ == "__main__":
-    train_model(
-        epochs=10,
-        batch_size=256,
-        learning_rate=0.001,
-    )
+    config = TrainingConfig()
+    train_model(config)
