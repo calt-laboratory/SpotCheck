@@ -1,3 +1,8 @@
+"""
+Training script for SpotCheck: Binary classification of skin moles (nevus vs melanoma).
+Uses a pretrained EfficientNet model, fine-tuned on HAM10000 dataset.
+"""
+
 import time
 import torch
 from dataclasses import dataclass
@@ -131,9 +136,13 @@ def train_model(config: TrainingConfig) -> None:
         pin_memory=pin_memory,
     )
 
+    # Initialize model, loss, and optimizer
     model = _initialize_model(device)
     criterion = CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+
+    # Ensure models directory exists
+    config.model_save_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Training state tracking
     best_val_acc = 0.0
@@ -174,6 +183,7 @@ def train_model(config: TrainingConfig) -> None:
             )
             break
 
+    # Print training summary
     training_time = time.time() - start_time
     minutes, seconds = divmod(int(training_time), 60)
     print(f"Training complete. Best Val Acc: {best_val_acc:.2f}%")
