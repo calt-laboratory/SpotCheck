@@ -1,4 +1,6 @@
+import time
 import torch
+from tqdm import tqdm
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
@@ -36,7 +38,7 @@ def train_model(
     validation_loader = DataLoader(
         dataset=validation_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,  # No shuffling for validation
         num_workers=NUM_CPU_WORKERS,
         pin_memory=pin_memory,
     )
@@ -59,13 +61,20 @@ def train_model(
 
     non_blocking = True if device.type == "cuda" else False
 
+    # Initialize tracking variables
+    best_validation_acc = 0.0
+    patience = 3  # Early stopping: wait 3 epochs w/o improvement
+    no_improvement_count = 0
+
+    start_time = time.time()
+
     for epoch in range(epochs):
-        model.train()  # Activate training modus
+        model.train()  # Activate training mode (enables Dropout, BatchNorm uses batch stats)
         train_loss = 0.0
         correct_train_predictions = 0
         total_num_train_samples = 0
 
-        for images, labels in train_loader:
+        for images, labels in tqdm(train_loader, desc=f"Epoch {epoch+1} Train", leave=False):
             # Transfer data to target device (GPU/CPU) asynchronously so CPU can load/transform next batch while GPU
             # computes gradients on curr batch
             images = images.to(device, non_blocking=non_blocking)
@@ -111,7 +120,7 @@ def train_model(
         total_num_validation_samples = 0
 
         with torch.no_grad():
-            for images, labels in validation_loader:
+            for images, labels in tqdm(validation_loader, desc=f"Epoch {epoch+1} Val", leave=False):
                 images = images.to(device)
                 labels = labels.to(device)
 
@@ -128,15 +137,33 @@ def train_model(
             100 * correct_validation_predictions / total_num_validation_samples
         )
 
+        # Check for best validation accuracy and save model
+        if validation_acc > best_validation_acc:
+            best_validation_acc = validation_acc
+            no_improvement_count = 0
+            torch.save(model.state_dict(), model_save_path)
+            print(f"New best model saved! Validation Acc: {best_validation_acc:.2f}%")
+        else:
+            no_improvement_count += 1
+            print(f"No improvement for {no_improvement_count}/{patience} epochs")
+
         print(
             f"Epoch {epoch + 1}/{epochs} | "
             f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}% | "
             f"Val Loss: {validation_loss:.4f} | Val Acc: {validation_acc:.2f}%"
         )
 
-        print(f"Training complete. Saving model to {model_save_path}")
-        torch.save(model.state_dict(), model_save_path)
-        print("Model saved successfully!")
+        # Early stopping check
+        if no_improvement_count >= patience:
+            print(f"Early stopping triggered after {epoch + 1} epochs (no improvement for {patience} epochs)")
+            break
+
+    # Print training summary
+    training_time = time.time() - start_time
+    minutes, seconds = divmod(int(training_time), 60)
+    print(f"Training complete. Best Val Acc: {best_validation_acc:.2f}%")
+    print(f"Total training time: {minutes}m {seconds}s")
+    print(f"Model saved to {model_save_path}")
 
 
 if __name__ == "__main__":
