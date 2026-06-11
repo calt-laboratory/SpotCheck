@@ -35,11 +35,11 @@ DEFAULT_IMAGE_SIZE: Final[tuple[int, int]] = (224, 224)
 def split_datasets(
     test_size: float = 0.2,
     validation_size: float = 0.1,
+    transform: transforms.Compose | None = None,
 ) -> tuple[Dataset, Dataset, Dataset]:
     df = _load_metadata()
     print(f"Number of samples: {df.shape[0]}")
 
-    transform = _get_transforms()
     dataset = NevusDataset(df, transform)
 
     test_dataset, temp_dataset = random_split(
