@@ -199,7 +199,9 @@ def compute_class_weights(dataset: Dataset) -> torch.Tensor:
         all_labels.append(label)
 
     class_weights = compute_class_weight(
-        class_weight="balanced", classes=np.unique(all_labels), y=all_labels
+        class_weight="balanced",
+        classes=np.unique(all_labels),
+        y=all_labels,
     )
 
     return torch.tensor(class_weights, dtype=torch.float32)
@@ -306,19 +308,3 @@ def train_model(config: TrainingConfig) -> tuple[float, float]:
     print(f"Model saved to {config.model_save_path}")
 
     return best_validation_accuracy, best_validation_sensitivity
-
-
-if __name__ == "__main__":
-    for model_name, batch_size in [
-        ("efficientnet_b0", 256),
-        ("efficientnet_b1", 256),
-        ("efficientnet_b2", 256),
-        ("efficientnet_b3", 256),
-        ("efficientnet_b4", 128),
-    ]:
-        config = TrainingConfig(
-            model_name=model_name,
-            batch_size=batch_size,
-            model_save_path=Path("models") / f"{model_name}.pth",
-        )
-        train_model(config)

@@ -34,18 +34,3 @@ def test(model_path: Path, model_name: str) -> tuple[float, float, float]:
     return validate_epoch(
         model=model, data_loader=test_data_loader, criterion=criterion, device=device
     )
-
-
-if __name__ == "__main__":
-    for model_name in [
-        "efficientnet_b0",
-        "efficientnet_b1",
-        "efficientnet_b2",
-        "efficientnet_b3",
-        "efficientnet_b4",
-    ]:
-        model_path = Path("models") / f"{model_name}.pth"
-        test_loss, test_acc, test_sensitivity = test(model_path, model_name)
-        print(
-            f"{model_name}: Test Acc = {test_acc:.2f}%, Test Loss = {test_loss:.4f}, Sensitivity = {test_sensitivity:.4f}"
-        )
