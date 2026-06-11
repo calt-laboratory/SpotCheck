@@ -85,7 +85,7 @@ def _get_input_size(model_name: str) -> int:
     return MODEL_REGISTRY[model_name][2]
 
 
-def _get_transforms(model_name: str) -> transforms.Compose:
+def get_transforms(model_name: str) -> transforms.Compose:
     """Get transforms with size matching the model's expected input"""
     input_size = _get_input_size(model_name)
     return transforms.Compose(
@@ -97,7 +97,7 @@ def _get_transforms(model_name: str) -> transforms.Compose:
     )
 
 
-def _initialize_model(device: torch.device, model_name: str) -> nn.Module:
+def initialize_model(device: torch.device, model_name: str) -> nn.Module:
     """Initialize model from registry with pretrained weights and binary classifier"""
     model_fn, weights, _ = MODEL_REGISTRY[model_name]
     model = model_fn(weights)
@@ -146,7 +146,7 @@ def _train_epoch(
     return avg_loss, accuracy
 
 
-def _validate_epoch(
+def validate_epoch(
     model: nn.Module,
     loader: DataLoader,
     criterion: CrossEntropyLoss,
@@ -186,7 +186,7 @@ def train_model(config: TrainingConfig) -> float:
 
     # Initialize data loaders w/ model-specific transforms
     pin_memory = True if device.type == "cuda" else False
-    transform = _get_transforms(config.model_name)
+    transform = get_transforms(config.model_name)
 
     train_dataset, validation_dataset, _ = split_datasets(
         test_size=0.2,
@@ -211,7 +211,7 @@ def train_model(config: TrainingConfig) -> float:
     )
 
     # Initialize model, loss, and optimizer
-    model = _initialize_model(device, config.model_name)
+    model = initialize_model(device, config.model_name)
     criterion = CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
 
@@ -230,7 +230,7 @@ def train_model(config: TrainingConfig) -> float:
         )
 
         # Validation phase
-        validation_loss, validation_acc = _validate_epoch(
+        validation_loss, validation_acc = validate_epoch(
             model, validation_loader, criterion, device
         )
 

@@ -94,7 +94,3 @@ def _get_transforms() -> transforms.Compose:
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]
     )
-
-
-if __name__ == "__main__":
-    split_datasets()
