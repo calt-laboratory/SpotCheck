@@ -27,6 +27,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from pathlib import Path
 from typing import Final, Any
+from sklearn.metrics import confusion_matrix
 
 from src.data_preparation.data_preparation import (
     split_datasets,
@@ -148,18 +149,21 @@ def _train_epoch(
 
 def validate_epoch(
     model: nn.Module,
-    loader: DataLoader,
+    data_loader: DataLoader,
     criterion: CrossEntropyLoss,
     device: torch.device,
-) -> tuple[float, float]:
-    """Run one validation epoch, return (avg_loss, avg_accuracy)"""
+) -> tuple[float, float, float]:
+    """Run one validation epoch, return (avg_loss, avg_accuracy, sensitivity)"""
     model.eval()
     running_loss = 0.0
     correct = 0
     total = 0
 
+    all_predictions = []
+    all_labels = []
+
     with torch.no_grad():
-        for images, labels in tqdm(loader, desc="Validation", leave=False):
+        for images, labels in tqdm(data_loader, desc="Validation", leave=False):
             images = images.to(device)
             labels = labels.to(device)
 
@@ -171,12 +175,23 @@ def validate_epoch(
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
 
+            all_predictions.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
     avg_loss = running_loss / total
     accuracy = 100 * correct / total
-    return avg_loss, accuracy
+
+    tn, fp, fn, tp = confusion_matrix(
+        y_true=all_labels,
+        y_pred=all_predictions,
+        labels=[0, 1],
+    ).ravel()
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+
+    return avg_loss, accuracy, sensitivity
 
 
-def train_model(config: TrainingConfig) -> float:
+def train_model(config: TrainingConfig) -> tuple[float, float]:
     """Main training fn w/ early stopping and model checkpointing"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -219,7 +234,8 @@ def train_model(config: TrainingConfig) -> float:
     config.model_save_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Training state tracking
-    best_val_acc = 0.0
+    best_validation_sensitivity = 0.0
+    best_validation_accuracy = 0.0
     no_improvement_count = 0
     start_time = time.time()
 
@@ -230,16 +246,23 @@ def train_model(config: TrainingConfig) -> float:
         )
 
         # Validation phase
-        validation_loss, validation_acc = validate_epoch(
-            model, validation_loader, criterion, device
+        validation_loss, validation_accuracy, validation_sensitivity = validate_epoch(
+            model=model,
+            data_loader=validation_loader,
+            criterion=criterion,
+            device=device,
         )
 
         # Check for best model and save
-        if validation_acc > best_val_acc:
-            best_val_acc = validation_acc
+        if validation_sensitivity > best_validation_sensitivity:
+            best_validation_sensitivity = validation_sensitivity
+            best_validation_accuracy = validation_accuracy
             no_improvement_count = 0
             torch.save(model.state_dict(), config.model_save_path)
-            print(f"New best model saved! Val Acc: {best_val_acc:.2f}%")
+            print(
+                f"New best model saved! "
+                f"Val Sensitivity: {validation_sensitivity:.4f} | Val Acc: {validation_accuracy:.2f}%"
+            )
         else:
             no_improvement_count += 1
             print(f"No improvement for {no_improvement_count}/{config.patience} epochs")
@@ -247,7 +270,8 @@ def train_model(config: TrainingConfig) -> float:
         print(
             f"Epoch {epoch + 1}/{config.epochs} | "
             f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}% | "
-            f"Val Loss: {validation_loss:.4f} | Val Acc: {validation_acc:.2f}%"
+            f"Val Loss: {validation_loss:.4f} | Val Acc: {validation_accuracy:.2f}% | "
+            f"Val Sensitivity: {validation_sensitivity:.4f}"
         )
 
         # Early stopping check
@@ -260,11 +284,13 @@ def train_model(config: TrainingConfig) -> float:
     # Print training summary
     training_time = time.time() - start_time
     minutes, seconds = divmod(int(training_time), 60)
-    print(f"Training complete. Best Val Acc: {best_val_acc:.2f}%")
+    print(
+        f"Training complete. Best Val Sensitivity: {best_validation_sensitivity:.4f} | Best Val Acc: {best_validation_accuracy:.2f}%"
+    )
     print(f"Total training time: {minutes}m {seconds}s")
     print(f"Model saved to {config.model_save_path}")
 
-    return best_val_acc
+    return best_validation_accuracy, best_validation_sensitivity
 
 
 if __name__ == "__main__":

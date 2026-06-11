@@ -8,7 +8,7 @@ from src.data_preparation.data_preparation import split_datasets
 from src.training.training import initialize_model, validate_epoch, get_transforms
 
 
-def test(model_path: Path, model_name: str) -> tuple[float, float]:
+def test(model_path: Path, model_name: str) -> tuple[float, float, float]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = initialize_model(device, model_name)
@@ -23,15 +23,17 @@ def test(model_path: Path, model_name: str) -> tuple[float, float]:
         transform=transform,
     )
 
-    test_loader = DataLoader(
-        test_dataset,
+    test_data_loader = DataLoader(
+        dataset=test_dataset,
         batch_size=64,
         shuffle=False,
         num_workers=4,
     )
 
     criterion = CrossEntropyLoss()
-    return validate_epoch(model, test_loader, criterion, device)
+    return validate_epoch(
+        model=model, data_loader=test_data_loader, criterion=criterion, device=device
+    )
 
 
 if __name__ == "__main__":
@@ -43,5 +45,7 @@ if __name__ == "__main__":
         "efficientnet_b4",
     ]:
         model_path = Path("models") / f"{model_name}.pth"
-        test_loss, test_acc = test(model_path, model_name)
-        print(f"{model_name}: Test Acc = {test_acc:.2f}%, Test Loss = {test_loss:.4f}")
+        test_loss, test_acc, test_sensitivity = test(model_path, model_name)
+        print(
+            f"{model_name}: Test Acc = {test_acc:.2f}%, Test Loss = {test_loss:.4f}, Sensitivity = {test_sensitivity:.4f}"
+        )
