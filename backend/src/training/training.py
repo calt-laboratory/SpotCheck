@@ -28,6 +28,8 @@ from torchvision import transforms
 from pathlib import Path
 from typing import Final, Any
 from sklearn.metrics import confusion_matrix
+from sklearn.utils.class_weight import compute_class_weight
+import numpy as np
 
 from src.data_preparation.data_preparation import (
     split_datasets,
@@ -101,7 +103,7 @@ def get_transforms(model_name: str) -> transforms.Compose:
 def initialize_model(device: torch.device, model_name: str) -> nn.Module:
     """Initialize model from registry with pretrained weights and binary classifier"""
     model_fn, weights, _ = MODEL_REGISTRY[model_name]
-    model = model_fn(weights)
+    model = model_fn(weights=weights)
 
     # Freeze all parameters (weights + biases) of all layers
     for param in model.parameters():
@@ -191,6 +193,18 @@ def validate_epoch(
     return avg_loss, accuracy, sensitivity
 
 
+def compute_class_weights(dataset: Dataset) -> torch.Tensor:
+    all_labels = []
+    for _, label in dataset:
+        all_labels.append(label)
+
+    class_weights = compute_class_weight(
+        class_weight="balanced", classes=np.unique(all_labels), y=all_labels
+    )
+
+    return torch.tensor(class_weights, dtype=torch.float32)
+
+
 def train_model(config: TrainingConfig) -> tuple[float, float]:
     """Main training fn w/ early stopping and model checkpointing"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -227,7 +241,8 @@ def train_model(config: TrainingConfig) -> tuple[float, float]:
 
     # Initialize model, loss, and optimizer
     model = initialize_model(device, config.model_name)
-    criterion = CrossEntropyLoss()
+    class_weights = compute_class_weights(dataset=train_dataset).to(device)
+    criterion = CrossEntropyLoss(weight=class_weights)
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
 
     # Ensure models directory exists
