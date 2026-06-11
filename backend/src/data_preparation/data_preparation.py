@@ -57,7 +57,6 @@ def split_datasets(
     return train_dataset, validation_dataset, test_dataset
 
 
-
 def _load_metadata() -> pl.DataFrame:
     df = pl.read_csv(METADATA_PATH)
     print(df.head())
